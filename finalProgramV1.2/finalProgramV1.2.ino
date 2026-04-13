@@ -1,6 +1,7 @@
 #if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
 #error Bluetooth is not enabled! Please run `make menuconfig` to and enable it
 #endif
+
 //This example creates a bridge between Serial and Classical Bluetooth (SPP)
 //and also demonstrate that SerialBT have the same functionalities of a normal Serial
 #include "BluetoothSerial.h"
@@ -9,12 +10,14 @@
 #define TXD2 17
 
 uint8_t txBuffer[20];
+uint8_t rep[5];
 
 uint16_t pas = 0;
 uint16_t runSpeed = 300;
 uint8_t accel = 25;
 String instruction;
 char header;
+bool execution = false;
 uint16_t value = 0;
 const float pasMm = 0.097193; //   99*pi (=périmetre roue) / 3600 = 0.097193 (=distance en mm parcourue en 1pas)
 const float pasDeg= 0.0495; //   1 / (entraxe(=225)*pi (=distance parcourue par chaque roue pour 360degrés) / pasMm) / 360 = 20.2 (=nombre de pas pour 1 degré)) = 0.0495 (=degré par pas)
@@ -23,8 +26,6 @@ uint8_t getCheckSum(uint8_t *buffer,uint8_t len);
 void speedModeRun(uint8_t slaveAddr,uint8_t dir,uint16_t speed,uint8_t acc);
 
 BluetoothSerial SerialBT;
-
-
 
 class Maillon
 { 
@@ -35,8 +36,10 @@ class Maillon
 	
 	public:
 	
-	Maillon(int);
+	Maillon(String V);
 	~Maillon();
+  String getInstr();
+  Maillon* getSuiv();
 };
 class Liste
 {	
@@ -46,47 +49,91 @@ class Liste
 	
 	Liste();
 	~Liste();
-  void Ajout_queue(int);
+  void Enfiler(String V);
+  void SuppLast();
+  void Vider();
+  Maillon* getTete();
 };
 
-Liste::Liste() // Constructeur Liste vide
+Liste::Liste() // Constructeur liste vide
 {
 	tete = nullptr;
 }
-Maillon::Maillon(int V) // Creation de maillon avec instruction
+Maillon::Maillon(String V) // Creation de maillon avec instruction
 {
 	instr = V;
 	suiv = nullptr;
 }
-Liste::~Liste() // Destructeur de Liste
+Liste::~Liste() // Destructeur de liste
 {
   if (tete != nullptr)
     delete tete;
 }
-Maillon::~Maillon() // Destructeur de Maillon
+Maillon::~Maillon() // Destructeur de maillon
 {
   if (suiv != nullptr)
     delete suiv;
 }
-void Liste::Ajout_queue(int V)
+void Liste::Enfiler(String V)
 {
-	Maillon * pc = tete;
-  Maillon * pr = nullptr;
-	while (pc != nullptr)
+	Maillon * temp1 = tete;
+  Maillon * temp2 = nullptr;
+	while (temp1 != nullptr)
 	{
-		pr = pc;
-		pc = pc -> suiv;
+		temp2 = temp1;
+		temp1 = temp1 -> suiv;
 	}
-	if (pr == nullptr)
+	if (temp2 == nullptr)
 	{
 		tete = new Maillon(V);
 	}
 	else
 	{
-		pr -> suiv = new Maillon(V);
+		temp2 -> suiv = new Maillon(V);
 	}
 }
+void Liste::SuppLast()
+{
+	if (tete == nullptr) 
+  {
+    return;
+  }
+  if (tete->suiv == nullptr) 
+  {
+    delete tete;
+    tete = nullptr;
+    return;
+  }
+  Maillon *temp = tete;
+  while (temp->suiv->suiv != nullptr) 
+  {
+    temp = temp->suiv;
+  }
+  delete temp->suiv;
+  temp->suiv = nullptr;
+}
+void Liste::Vider()
+{
+  if (tete != nullptr) {
+    delete tete;
+    tete = nullptr;
+  }
+}
+Maillon* Liste::getTete()
+{ 
+  return tete; 
+}
+String Maillon::getInstr()
+{ 
+  return instr; 
+}
+Maillon* Maillon::getSuiv()  
+{
+  return suiv; 
+}
 
+Liste file;
+Maillon * tmp;
 
 void setup()
 {
@@ -100,32 +147,6 @@ void setup()
   Serial.println("The device started, now you can pair it with bluetooth!");
 
   delay(3000);
-/*
-  SerialBT.println("Choose the running motor : RIGHT = 1 | LEFT = 2 | ALL = 0");
-  while (SerialBT.available() == 0); //attend une entrée
-  sAddr = SerialBT.parseInt(); //recupere l'entrée du serial monitor
-  while (SerialBT.available() > 0) SerialBT.read(); //vide le Serial.available()
-
-  SerialBT.println("Choose the direction : FORWARD = 0 | BACKWARD = 1");
-  while (SerialBT.available() == 0);
-  runDir = SerialBT.parseInt();
-  while (SerialBT.available() > 0) SerialBT.read();
-
-  SerialBT.println("Choose the speed : 0-3000");
-  while (SerialBT.available() == 0);
-  runSpeed = SerialBT.parseInt();
-  while (SerialBT.available() > 0) SerialBT.read();
-
-  SerialBT.println("Choose the acceleration : 0-255");
-  while (SerialBT.available() == 0);
-  accel = SerialBT.parseInt();
-  while (SerialBT.available() > 0) SerialBT.read();
-
-  SerialBT.println("Choose the number of steps :");
-  while (SerialBT.available() == 0);
-  pas = SerialBT.parseInt();
-  while (SerialBT.available() > 0) SerialBT.read();
-*/
 }
 
 void loop()
@@ -136,20 +157,43 @@ void loop()
     instruction = SerialBT.readString();
     while (SerialBT.available() > 0) SerialBT.read(); //sécurité pour etre sûr que le buffer soit vide
     header = instruction[0];
+
+    if(header == 'E')
+    {
+      stopComm();
+      execution = false;
+    }
+    else if(header == 'C')
+    {
+      file.Vider();
+    }
+    else if(header == 'L')
+    {
+      file.SuppLast();
+    }
+    else if(header == 'M')
+    {
+      tmp = file.getTete();
+      execution = true;
+      SerialBT.println("exe = true");
+    }
+    else
+    {
+      file.Enfiler(instruction);
+      SerialBT.println((file.getTete()) -> getInstr());
+    }
+  }
+
+  if(tmp != nullptr && execution && queryMotorStatus(2) == 1)
+  {
+    instruction = tmp -> getInstr();
+    header = instruction[0];
     instruction.remove(0,1);
     value = instruction.toInt();
     SerialBT.println(instruction);
     SerialBT.println(header);
 
-    if(header == 'E')
-    {
-      stopComm();
-    }
-    else if(header == 'M')
-    {
-      
-    }
-    else if(header == 'Z')
+    if(header == 'Z')
     {
       value = value / pasMm;
       SerialBT.println(value);
@@ -177,34 +221,10 @@ void loop()
       positionMode(1, 1, runSpeed, accel, value);
       positionMode(2, 1, runSpeed, accel, value);
     }
-    else if(header == 'C')
-    {
-
-    }
-    else if(header == 'L')
-    {
-
-    }
+    tmp = tmp->getSuiv();
+    SerialBT.println(queryMotorStatus(2));
   }
-  
-
-  /*
-  if (emStop == 1)
-  {
-    stopComm();
-  }
-  else
-  {
-    positionMode(sAddr, runDir, runSpeed, accel, pas); // STEEL BALL RUN
-    digitalWrite(LED_BUILTIN, digitalRead(LED_BUILTIN)^1);
-  }
-
-  while (SerialBT.available() == 0);
-  emStop = SerialBT.parseInt();
-  while (SerialBT.available() > 0) SerialBT.read();
-  */
-
-  delay(3000);
+  delay(1000);
 }
 
 /*--------------------------------*/
@@ -225,16 +245,6 @@ void positionMode(uint8_t slaveAddr,uint8_t dir,uint16_t speed,uint8_t acc,uint3
   txBuffer[9] = (pulses >> 0)&0xFF;   //Pulse bit7 - bit0
   txBuffer[10] = getCheckSum(txBuffer,10);  //Calculate checksum
   //-----------------------------------------
-
-  SerialBT.print("TX : ");
-
-  for(int i=0;i<11;i++)
-  {
-    SerialBT.printf("%02X ", txBuffer[i]);
-  }
-
-  SerialBT.println();
-
   Serial2.write(txBuffer,11);
 }
 
@@ -249,17 +259,27 @@ void stopComm()
   txBuffer[5] = 2; //si acc = 0 les moteurs s'arretent immédiatement, en mettant 4 ils vont décélérer d'abord
   txBuffer[6] = getCheckSum(txBuffer,6);
   //-----------------------------------------
+  Serial2.write(txBuffer,7);
+}
 
-  SerialBT.print("TX : ");
+uint8_t queryMotorStatus(uint8_t slaveAddr)
+{
+  // Vider le buffer avant d'envoyer
+  while (Serial2.available() > 0) Serial2.read();
 
-  for(int i=0;i<7;i++)
-  {
-    SerialBT.printf("%02X ", txBuffer[i]);
+  txBuffer[0] = 0xFA;
+  txBuffer[1] = slaveAddr;
+  txBuffer[2] = 0xF1;
+  txBuffer[3] = getCheckSum(txBuffer, 3);
+  Serial2.write(txBuffer, 4);
+
+  unsigned long t = millis();
+  while (Serial2.available() < 5) {
+    if (millis() - t > 50) return 0; // si le moteur répond pas, renvoie 0 (=échec) (sinon le programe est bloqué dans le while)
   }
 
-  SerialBT.println();
-
-  Serial2.write(txBuffer,7);
+  Serial2.readBytes(rep, 5);
+  return rep[3];
 }
 
 /*---------------------------*/
